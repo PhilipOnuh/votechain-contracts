@@ -31,29 +31,29 @@ pub mod test_helpers;
 // #[cfg(test)]
 // mod integration_tests;
 #[cfg(test)]
-mod integration_tests;
-#[cfg(test)]
 mod e2e_lifecycle_tests;
+#[cfg(test)]
+mod integration_tests;
 
 use soroban_sdk::{contract, contractclient, contractimpl, token, Address, Env, String, Vec};
 use storage::{
-    get_admin as storage_get_admin, get_contract_state, get_last_proposal, get_min_duration,
-    get_min_proposal_balance, get_proposal_cooldown, get_restrict_admin_vote, get_timelock_duration,
-    get_version, get_amend_window, get_voter_snapshot, get_voting_token, get_veto_threshold,
-    has_voted, is_initialized, is_paused, load_proposal, mark_voted, next_id, save_proposal,
-    save_vote_record, save_voter_snapshot, set_admin, set_contract_state, set_last_proposal,
-    set_min_duration, set_max_duration, set_min_proposal_balance, set_paused, set_proposal_cooldown,
-    set_restrict_admin_vote, set_timelock_duration, set_version, set_veto_threshold, set_voting_token,
-    get_vote_record, get_max_duration, set_pending_admin, get_pending_admin, clear_pending_admin,
-    set_admin_transfer_expiry, get_admin_transfer_expiry, set_pause_reason,
-    set_persistent_storage_ttl, get_persistent_storage_ttl,
-    get_multisig_config, set_multisig_config, save_multisig_action, load_multisig_action,
-    set_multisig_approval, has_multisig_approval, next_multisig_action_id,
-    get_metadata_version, set_metadata_version,
+    clear_pending_admin, get_admin as storage_get_admin, get_admin_transfer_expiry,
+    get_amend_window, get_contract_state, get_last_proposal, get_max_duration,
+    get_metadata_version, get_min_duration, get_min_proposal_balance, get_multisig_config,
+    get_pending_admin, get_persistent_storage_ttl, get_proposal_cooldown, get_restrict_admin_vote,
+    get_timelock_duration, get_version, get_veto_threshold, get_vote_record, get_voter_snapshot,
+    get_voting_token, has_multisig_approval, has_voted, is_initialized, is_paused,
+    load_multisig_action, load_proposal, mark_voted, next_id, next_multisig_action_id,
+    save_multisig_action, save_proposal, save_vote_record, save_voter_snapshot, set_admin,
+    set_admin_transfer_expiry, set_contract_state, set_last_proposal, set_max_duration,
+    set_metadata_version, set_min_duration, set_min_proposal_balance, set_multisig_approval,
+    set_multisig_config, set_pause_reason, set_paused, set_pending_admin,
+    set_persistent_storage_ttl, set_proposal_cooldown, set_restrict_admin_vote,
+    set_timelock_duration, set_version, set_veto_threshold, set_voting_token,
 };
 use types::{
-    ContractError, ContractState, DataKey, GovernanceConfig, MultiSigAction, MultiSigActionType,
-    MultiSigConfig, Proposal, ProposalState, SpamConfig, Vote, VoteRecord,
+    ContractError, ContractState, DataKey, ExecutionPayload, GovernanceConfig, MultiSigAction,
+    MultiSigActionType, MultiSigConfig, Proposal, ProposalState, SpamConfig, Vote, VoteRecord,
 };
 
 const MAX_TITLE_LEN: u32 = 128;
@@ -92,6 +92,16 @@ fn validate_string(s: &String, err: ContractError) -> Result<(), ContractError> 
 fn require_non_zero_address(env: &Env, addr: &Address) -> Result<(), ContractError> {
     if *addr == Address::from_str(env, ZERO_ADDRESS) {
         return Err(ContractError::InvalidAddress);
+    }
+    Ok(())
+}
+
+fn validate_execution_payload(
+    env: &Env,
+    payload: &Option<ExecutionPayload>,
+) -> Result<(), ContractError> {
+    if let Some(payload) = payload {
+        require_non_zero_address(env, &payload.target)?;
     }
     Ok(())
 }
@@ -282,7 +292,10 @@ impl GovernanceContract {
         if token_client.try_balance(&admin).is_err() {
             return Err(ContractError::InvalidTokenContract);
         }
-        if TokenSupplyClient::new(&env, &voting_token).try_total_supply().is_err() {
+        if TokenSupplyClient::new(&env, &voting_token)
+            .try_total_supply()
+            .is_err()
+        {
             return Err(ContractError::InvalidTokenContract);
         }
         // Validate parameters
@@ -292,7 +305,7 @@ impl GovernanceContract {
         if min_duration > max_duration {
             return Err(ContractError::InvalidDurationConfig);
         }
-        
+
         set_admin(&env, &admin);
         set_voting_token(&env, &voting_token);
         let supply = TokenSupplyClient::new(&env, &voting_token).total_supply();
@@ -317,7 +330,7 @@ impl GovernanceContract {
         }
         set_veto_threshold(&env, veto_threshold);
 
-      if persistent_storage_ttl > 0 {
+        if persistent_storage_ttl > 0 {
             set_persistent_storage_ttl(&env, persistent_storage_ttl);
         }
         set_version(&env, (1, 0, 0));
@@ -369,6 +382,28 @@ impl GovernanceContract {
         duration: u64,
         tags: Vec<String>,
     ) -> Result<u64, ContractError> {
+        Self::create_proposal_with_payload(
+            env,
+            proposer,
+            title,
+            description,
+            quorum,
+            duration,
+            tags,
+            None,
+        )
+    }
+
+    pub fn create_proposal_with_payload(
+        env: Env,
+        proposer: Address,
+        title: String,
+        description: String,
+        quorum: i128,
+        duration: u64,
+        tags: Vec<String>,
+        execution_payload: Option<ExecutionPayload>,
+    ) -> Result<u64, ContractError> {
         // SEC-005: auth first.
         proposer.require_auth();
         // SEC-004: reject zero address.
@@ -376,6 +411,8 @@ impl GovernanceContract {
         if is_paused(&env) {
             return Err(ContractError::ContractPaused);
         }
+
+        validate_execution_payload(&env, &execution_payload)?;
 
         // Title: non-empty, max 128 chars, printable bytes only (SEC-003)
         let title_len = title.len();
@@ -468,11 +505,12 @@ impl GovernanceContract {
             execute_after: 0,
             tags,
             metadata_version,
+            execution_payload: execution_payload.clone(),
         };
-        
+
         // Check invariants
         check_all_proposal_invariants(&proposal)?;
-        
+
         save_proposal(&env, &proposal);
         set_last_proposal(&env, &proposer, now);
         events::proposal_created(&env, id, &proposer, metadata_version);
@@ -739,11 +777,7 @@ impl GovernanceContract {
     /// - [`ContractError::ContractPaused`] if the contract is paused.
     /// - [`ContractError::CannotDelegateToSelf`] if `delegator == delegatee`.
     /// - [`ContractError::InvalidDelegatee`] if `delegatee` is the zero address.
-    pub fn delegate(
-        env: Env,
-        delegator: Address,
-        delegatee: Address,
-    ) -> Result<(), ContractError> {
+    pub fn delegate(env: Env, delegator: Address, delegatee: Address) -> Result<(), ContractError> {
         delegator.require_auth();
         require_non_zero_address(&env, &delegator)?;
         if is_paused(&env) {
@@ -889,12 +923,15 @@ impl GovernanceContract {
 
         // Check invariants
         check_all_proposal_invariants(&proposal)?;
-        
+
         save_vote_record(
             &env,
             proposal_id,
             &voter,
-            &VoteRecord { vote_type: vote.clone(), weight },
+            &VoteRecord {
+                vote_type: vote.clone(),
+                weight,
+            },
         );
         save_proposal(&env, &proposal);
         events::vote_cast(&env, proposal_id, &voter, &vote, weight);
@@ -941,12 +978,12 @@ impl GovernanceContract {
         } else {
             ProposalState::Rejected
         };
-        
+
         // Check state transition and invariants
         check_proposal_state_transition(&proposal.state, &next_state)?;
         proposal.state = next_state;
         check_all_proposal_invariants(&proposal)?;
-        
+
         save_proposal(&env, &proposal);
         events::proposal_finalised(&env, proposal_id, &proposal.state, proposal.execute_after);
         Ok(())
@@ -977,12 +1014,16 @@ impl GovernanceContract {
         if env.ledger().timestamp() < proposal.execute_after {
             return Err(ContractError::TimelockNotExpired);
         }
-        
+
+        if let Some(payload) = proposal.execution_payload.clone() {
+            let _: () = env.invoke_contract(&payload.target, &payload.function_name, ());
+        }
+
         // Check state transition and invariants
         check_proposal_state_transition(&proposal.state, &ProposalState::Executed)?;
         proposal.state = ProposalState::Executed;
         check_all_proposal_invariants(&proposal)?;
-        
+
         save_proposal(&env, &proposal);
         events::proposal_executed(&env, proposal_id);
         Ok(())
@@ -1010,12 +1051,12 @@ impl GovernanceContract {
         if proposal.state != ProposalState::Active {
             return Err(ContractError::ProposalNotActive);
         }
-        
+
         // Check state transition and invariants
         check_proposal_state_transition(&proposal.state, &ProposalState::Cancelled)?;
         proposal.state = ProposalState::Cancelled;
         check_all_proposal_invariants(&proposal)?;
-        
+
         save_proposal(&env, &proposal);
         events::proposal_cancelled(&env, proposal_id);
         Ok(())
@@ -1053,57 +1094,89 @@ impl GovernanceContract {
             return Err(ContractError::ProposalNotActive);
         }
         proposal.quorum = new_quorum;
-        
+
         // Check invariants
         check_all_proposal_invariants(&proposal)?;
-        
+
         save_proposal(&env, &proposal);
         events::quorum_updated(&env, proposal_id, new_quorum);
         Ok(())
     }
 
     /// Updates the minimum allowed voting duration. Admin only.
-    pub fn update_min_duration(env: Env, admin: Address, new_min: u64) -> Result<(), ContractError> {
+    pub fn update_min_duration(
+        env: Env,
+        admin: Address,
+        new_min: u64,
+    ) -> Result<(), ContractError> {
         admin.require_auth();
         require_non_zero_address(&env, &admin)?;
-        if get_admin(&env)? != admin { return Err(ContractError::NotAdmin); }
-        if new_min == 0 { return Err(ContractError::InvalidDuration); }
-        if new_min > get_max_duration(&env) { return Err(ContractError::InvalidDurationRange); }
+        if get_admin(&env)? != admin {
+            return Err(ContractError::NotAdmin);
+        }
+        if new_min == 0 {
+            return Err(ContractError::InvalidDuration);
+        }
+        if new_min > get_max_duration(&env) {
+            return Err(ContractError::InvalidDurationRange);
+        }
         set_min_duration(&env, new_min);
         events::min_duration_updated(&env, new_min);
         Ok(())
     }
 
     /// Updates the maximum allowed voting duration. Admin only.
-    pub fn update_max_duration(env: Env, admin: Address, new_max: u64) -> Result<(), ContractError> {
+    pub fn update_max_duration(
+        env: Env,
+        admin: Address,
+        new_max: u64,
+    ) -> Result<(), ContractError> {
         admin.require_auth();
         require_non_zero_address(&env, &admin)?;
-        if get_admin(&env)? != admin { return Err(ContractError::NotAdmin); }
-        if new_max < get_min_duration(&env) { return Err(ContractError::InvalidDurationRange); }
+        if get_admin(&env)? != admin {
+            return Err(ContractError::NotAdmin);
+        }
+        if new_max < get_min_duration(&env) {
+            return Err(ContractError::InvalidDurationRange);
+        }
         set_max_duration(&env, new_max);
         events::max_duration_updated(&env, new_max);
         Ok(())
     }
 
     /// Updates the default quorum hint. Does not affect existing proposals. Admin only.
-    pub fn update_quorum_default(env: Env, admin: Address, new_default: i128) -> Result<(), ContractError> {
+    pub fn update_quorum_default(
+        env: Env,
+        admin: Address,
+        new_default: i128,
+    ) -> Result<(), ContractError> {
         admin.require_auth();
         require_non_zero_address(&env, &admin)?;
-        if get_admin(&env)? != admin { return Err(ContractError::NotAdmin); }
-        if new_default <= 0 { return Err(ContractError::InvalidQuorum); }
+        if get_admin(&env)? != admin {
+            return Err(ContractError::NotAdmin);
+        }
+        if new_default <= 0 {
+            return Err(ContractError::InvalidQuorum);
+        }
         set_quorum_default(&env, new_default);
         events::quorum_default_updated(&env, new_default);
         Ok(())
     }
 
     /// Returns the configured minimum duration in seconds.
-    pub fn get_min_duration_config(env: Env) -> u64 { get_min_duration(&env) }
+    pub fn get_min_duration_config(env: Env) -> u64 {
+        get_min_duration(&env)
+    }
 
     /// Returns the configured maximum duration in seconds.
-    pub fn get_max_duration_config(env: Env) -> u64 { get_max_duration(&env) }
+    pub fn get_max_duration_config(env: Env) -> u64 {
+        get_max_duration(&env)
+    }
 
     /// Returns the default quorum (0 if not set).
-    pub fn get_quorum_default_config(env: Env) -> i128 { get_quorum_default(&env) }
+    pub fn get_quorum_default_config(env: Env) -> i128 {
+        get_quorum_default(&env)
+    }
 
     /// Transfers admin rights to a new address. Only the current admin may call this.
     ///
@@ -1309,7 +1382,10 @@ impl GovernanceContract {
     /// Returns `(bump_amount, bump_threshold)` — both in ledger counts.
     /// When not explicitly set at `initialize`, both default to `LEDGERS_TO_LIVE` (~31 days).
     pub fn get_storage_ttl_config(env: Env) -> (u32, u32) {
-        (get_storage_bump_amount(&env), get_storage_bump_threshold(&env))
+        (
+            get_storage_bump_amount(&env),
+            get_storage_bump_threshold(&env),
+        )
     }
 
     /// Returns the contract lifecycle state.
@@ -1371,7 +1447,8 @@ impl GovernanceContract {
     /// // Second page (proposals 11-20)
     /// list_proposals(env, 10, 10)
     /// ```
-    pub fn list_proposals(env: Env, offset: u64, limit: u64) -> soroban_sdk::Vec<Proposal> {        const MAX_LIMIT: u64 = 50;
+    pub fn list_proposals(env: Env, offset: u64, limit: u64) -> soroban_sdk::Vec<Proposal> {
+        const MAX_LIMIT: u64 = 50;
 
         let total = env
             .storage()
@@ -1492,7 +1569,8 @@ impl GovernanceContract {
         if is_paused(&env) {
             return Err(ContractError::ContractPaused);
         }
-        let config = storage_get_multisig_config(&env).ok_or(ContractError::MultiSigNotConfigured)?;
+        let config =
+            storage_get_multisig_config(&env).ok_or(ContractError::MultiSigNotConfigured)?;
         require_multisig_admin(&config, &proposer)?;
 
         let action_id = next_multisig_action_id(&env)?;
@@ -1544,7 +1622,8 @@ impl GovernanceContract {
         if is_paused(&env) {
             return Err(ContractError::ContractPaused);
         }
-        let config = storage_get_multisig_config(&env).ok_or(ContractError::MultiSigNotConfigured)?;
+        let config =
+            storage_get_multisig_config(&env).ok_or(ContractError::MultiSigNotConfigured)?;
         require_multisig_admin(&config, &approver)?;
 
         let mut action = load_multisig_action(&env, action_id)?;
@@ -1555,10 +1634,19 @@ impl GovernanceContract {
             return Err(ContractError::AlreadyApproved);
         }
 
-        action.approvals = action.approvals.checked_add(1).ok_or(ContractError::VoteTallyOverflow)?;
+        action.approvals = action
+            .approvals
+            .checked_add(1)
+            .ok_or(ContractError::VoteTallyOverflow)?;
         set_multisig_approval(&env, action_id, &approver);
         save_multisig_action(&env, &action);
-        events::multisig_action_approved(&env, action_id, &approver, action.approvals, config.threshold);
+        events::multisig_action_approved(
+            &env,
+            action_id,
+            &approver,
+            action.approvals,
+            config.threshold,
+        );
 
         if action.approvals >= config.threshold {
             execute_multisig_action(

@@ -38,10 +38,41 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractclient, contractimpl, symbol_short,
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String, Vec,
+};
 
+use crate::types::{ExecutionPayload, ProposalState, Vote};
 use crate::{GovernanceContract, GovernanceContractClient};
-use crate::types::{ProposalState, Vote};
+
+#[contract]
+pub struct PayloadTarget;
+
+#[contractclient(name = "PayloadTargetClient")]
+pub trait PayloadTargetInterface {
+    fn ping(env: Env);
+    fn fail(env: Env);
+    fn was_called(env: Env) -> bool;
+}
+
+#[contractimpl]
+impl PayloadTarget {
+    pub fn ping(env: Env) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("called"), &true);
+    }
+
+    pub fn fail(_env: Env) {
+        panic!("payload failed");
+    }
+
+    pub fn was_called(env: Env) -> bool {
+        env.storage().instance().has(&symbol_short!("called"))
+    }
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -78,7 +109,12 @@ fn setup<'a>() -> Setup<'a> {
         &0_u32,         // persistent_storage_ttl
     );
 
-    Setup { env, gov, token, admin }
+    Setup {
+        env,
+        gov,
+        token,
+        admin,
+    }
 }
 
 fn make_proposal(s: &Setup) -> u64 {
@@ -87,8 +123,8 @@ fn make_proposal(s: &Setup) -> u64 {
         &proposer,
         &String::from_str(&s.env, "Integration proposal"),
         &String::from_str(&s.env, "End-to-end lifecycle test"),
-        &100_i128,       // quorum
-        &3600_u64,       // duration (1 hour)
+        &100_i128,         // quorum
+        &3600_u64,         // duration (1 hour)
         &Vec::new(&s.env), // tags
     )
 }
@@ -133,6 +169,89 @@ fn test_lifecycle_rejected() {
 }
 
 // ── TEST 3: create → vote (mid-vote) → cancel ────────────────────────────────
+
+#[test]
+fn test_create_proposal_rejects_invalid_execution_payload() {
+    let s = setup();
+    let proposer = Address::generate(&s.env);
+    let result = s.gov.try_create_proposal_with_payload(
+        &proposer,
+        &String::from_str(&s.env, "Payload"),
+        &String::from_str(&s.env, "desc"),
+        &100_i128,
+        &3600_u64,
+        &Vec::new(&s.env),
+        &Some(ExecutionPayload {
+            target: Address::from_str(
+                &s.env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            ),
+            function_name: symbol_short!("ping"),
+        }),
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_execute_invokes_optional_execution_payload() {
+    let s = setup();
+    let proposer = Address::generate(&s.env);
+    let target_id = s.env.register(PayloadTarget, ());
+    let id = s.gov.create_proposal_with_payload(
+        &proposer,
+        &String::from_str(&s.env, "Payload"),
+        &String::from_str(&s.env, "desc"),
+        &100_i128,
+        &3600_u64,
+        &Vec::new(&s.env),
+        &Some(ExecutionPayload {
+            target: target_id.clone(),
+            function_name: symbol_short!("ping"),
+        }),
+    );
+
+    let voter = Address::generate(&s.env);
+    s.token.mint(&s.admin, &voter, &200_i128);
+    s.gov.cast_vote(&voter, &id, &Vote::Yes);
+
+    s.env.ledger().with_mut(|l| l.timestamp += 3601);
+    s.gov.finalise(&id);
+    s.gov.execute(&s.admin, &id);
+
+    assert!(PayloadTargetClient::new(&s.env, &target_id).was_called());
+    assert_eq!(s.gov.get_proposal(&id).state, ProposalState::Executed);
+}
+
+#[test]
+fn test_execute_payload_failure_rolls_back_state() {
+    let s = setup();
+    let proposer = Address::generate(&s.env);
+    let target_id = s.env.register(PayloadTarget, ());
+    let id = s.gov.create_proposal_with_payload(
+        &proposer,
+        &String::from_str(&s.env, "Payload fail"),
+        &String::from_str(&s.env, "desc"),
+        &100_i128,
+        &3600_u64,
+        &Vec::new(&s.env),
+        &Some(ExecutionPayload {
+            target: target_id.clone(),
+            function_name: symbol_short!("fail"),
+        }),
+    );
+
+    let voter = Address::generate(&s.env);
+    s.token.mint(&s.admin, &voter, &200_i128);
+    s.gov.cast_vote(&voter, &id, &Vote::Yes);
+
+    s.env.ledger().with_mut(|l| l.timestamp += 3601);
+    s.gov.finalise(&id);
+
+    let result = s.gov.try_execute(&s.admin, &id);
+    assert!(result.is_err());
+    assert_eq!(s.gov.get_proposal(&id).state, ProposalState::Passed);
+}
 
 #[test]
 fn test_lifecycle_cancelled_mid_vote() {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use soroban_sdk::{contracterror, contracttype, Address, String, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, String, Symbol, Vec};
 
 /// All revert conditions for the governance contract.
 #[contracterror]
@@ -105,6 +105,8 @@ pub enum ContractError {
     InvalidProposalStateTransition = 42,
     /// 43 – Invariant violation: proposal already exists
     ProposalAlreadyExists = 43,
+    /// 44 – Execution payload target or function name is invalid
+    InvalidExecutionPayload = 44,
 }
 
 /// Lifecycle state of the governance contract itself.
@@ -154,6 +156,13 @@ pub struct Translation {
 /// the contract-level metadata version so newly created proposals carry the
 /// updated version number while old proposals retain their original value.
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionPayload {
+    pub target: Address,
+    pub function_name: Symbol,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Proposal {
     pub id: u64,
@@ -175,6 +184,8 @@ pub struct Proposal {
     /// Schema version for this proposal's metadata (#547).
     /// Allows clients to handle format changes across contract upgrades safely.
     pub metadata_version: u32,
+    /// Optional execution payload to invoke when `execute()` succeeds.
+    pub execution_payload: Option<ExecutionPayload>,
 }
 
 /// Storage key enum for the governance contract.

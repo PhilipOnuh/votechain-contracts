@@ -15,7 +15,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{contract, contractimpl, symbol_short, testutils::{Address as _, Events, Ledger}, Address, Env, IntoVal, String, TryFromVal};
+use soroban_sdk::{contract, contractclient, contractimpl, symbol_short, testutils::{Address as _, Events, Ledger}, Address, Env, IntoVal, String, TryFromVal};
 use crate::test_helpers::{setup_env, create_test_proposal, mint_and_vote};
 
 // ── local helpers for tests that need a custom Env/client shape ───────────────
@@ -237,6 +237,7 @@ fn test_create_proposal() {
     assert_eq!(t.client.proposal_count(), 1);
     assert_eq!(t.client.get_proposal(&id).state, ProposalState::Active);
 }
+
 
 #[test]
 fn test_amend_proposal_before_voting_starts() {
