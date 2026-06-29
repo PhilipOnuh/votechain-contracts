@@ -239,7 +239,7 @@ fn test_create_proposal() {
 }
 
 #[test]
-fn test_amend_proposal_before_voting_starts() {
+fn test_amend_proposal_is_blocked_before_voting_starts() {
     let env = Env::default();
     env.mock_all_auths();
     let client = new_client(&env);
@@ -264,20 +264,20 @@ fn test_amend_proposal_before_voting_starts() {
         &3600,
     );
 
-    client.amend_proposal(
+    let result = client.try_amend_proposal(
         &proposer,
         &id,
         &String::from_str(&env, "Updated title"),
         &String::from_str(&env, "Updated desc"),
     );
+    assert!(result.is_err(), "proposal metadata amendments should be rejected");
 
     let proposal = client.get_proposal(&id);
-    assert_eq!(proposal.title, String::from_str(&env, "Updated title"));
-    assert_eq!(proposal.description, String::from_str(&env, "Updated desc"));
+    assert_eq!(proposal.title, String::from_str(&env, "Original title"));
+    assert_eq!(proposal.description, String::from_str(&env, "Original desc"));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #35)")]
 fn test_amend_proposal_after_voting_starts_reverts() {
     let env = Env::default();
     env.mock_all_auths();
@@ -304,12 +304,13 @@ fn test_amend_proposal_after_voting_starts_reverts() {
     );
     env.ledger().with_mut(|l| l.timestamp += 60);
 
-    client.amend_proposal(
+    let result = client.try_amend_proposal(
         &proposer,
         &id,
         &String::from_str(&env, "Updated title"),
         &String::from_str(&env, "Updated desc"),
     );
+    assert!(result.is_err(), "proposal metadata amendments should be rejected once voting starts");
 }
 
 #[test]
@@ -340,12 +341,13 @@ fn test_amend_proposal_by_non_proposer_reverts() {
     );
 
     let other = Address::generate(&env);
-    client.amend_proposal(
+    let result = client.try_amend_proposal(
         &other,
         &id,
         &String::from_str(&env, "Updated title"),
         &String::from_str(&env, "Updated desc"),
     );
+    assert!(result.is_err(), "proposal metadata amendments should be rejected for non-proposers too");
 }
 
 #[test]

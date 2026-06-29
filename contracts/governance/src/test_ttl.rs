@@ -499,20 +499,21 @@ fn test_amendment_updates_proposal_and_storage_survives() {
     mint(&env, &tok_id, &admin, &proposer, 500);
     let id = make_proposal(&env, &gov, &proposer);
 
-    gov.amend_proposal(
+    let result = gov.try_amend_proposal(
         &proposer,
         &id,
         &String::from_str(&env, "Amended Title"),
         &String::from_str(&env, "Amended description"),
     );
+    assert!(result.is_err(), "metadata amendments must be blocked");
 
     env.ledger().with_mut(|l| l.sequence_number += 500);
 
     let p = gov.get_proposal(&id);
-    assert_eq!(p.title, String::from_str(&env, "Amended Title"),
-        "amended title must be readable after ledger advance");
-    assert_eq!(p.description, String::from_str(&env, "Amended description"),
-        "amended description must be readable after ledger advance");
+    assert_eq!(p.title, String::from_str(&env, "Original title"),
+        "proposal title must remain unchanged after a blocked amendment attempt");
+    assert_eq!(p.description, String::from_str(&env, "Original description"),
+        "proposal description must remain unchanged after a blocked amendment attempt");
 }
 
 // ── LastProposal TTL bump ─────────────────────────────────────────────────────
